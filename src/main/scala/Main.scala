@@ -20,7 +20,8 @@ object Main extends App {
   spark.sparkContext.setLogLevel("ERROR")
 
   import spark.implicits._
-
+  import spark.sessionState.conf
+  conf.adaptiveExecutionEnabled
   //Вариант 31
   val targetCourses = Seq(4040, 35, 786, 831, 1463, 2031)
   val inputPath = "src/main/resources/DO_record_per_line.json"
@@ -37,25 +38,13 @@ object Main extends App {
     .setPattern("[^\\w\\dа-яА-Я_Ёё]")
   val wordsData = tokenizer.transform(coursesDs)
 
-  //“danish”, “dutch”, “english”, “finnish”, “french”, “german”, “hungarian”, “italian”, “norwegian”, “portuguese”, “russian”, “spanish”, “swedish” “turkish”
-  val stopWords = //эхх
-    StopWordsRemover.loadDefaultStopWords("danish")     ++
-    StopWordsRemover.loadDefaultStopWords("dutch")      ++
-    StopWordsRemover.loadDefaultStopWords("english")    ++
-    StopWordsRemover.loadDefaultStopWords("finnish")    ++
-    StopWordsRemover.loadDefaultStopWords("french")     ++
-    StopWordsRemover.loadDefaultStopWords("german")     ++
-    StopWordsRemover.loadDefaultStopWords("hungarian")  ++
-    StopWordsRemover.loadDefaultStopWords("italian")    ++
-    StopWordsRemover.loadDefaultStopWords("norwegian")  ++
-    StopWordsRemover.loadDefaultStopWords("portuguese") ++
-    StopWordsRemover.loadDefaultStopWords("russian")    ++
-    StopWordsRemover.loadDefaultStopWords("spanish")    ++
-    StopWordsRemover.loadDefaultStopWords("swedish")    ++
-    StopWordsRemover.loadDefaultStopWords("turkish")
+  val languages = Seq("danish", "dutch", "english", "finnish", "french", "german", "hungarian", "italian", "norwegian", "portuguese", "russian", "spanish", "swedish", "turkish")
+  var stopWords = mutable.Seq.empty[String]
+
+  languages.map(language => stopWords = stopWords ++ StopWordsRemover.loadDefaultStopWords(language))
 
   val remover = new StopWordsRemover()
-    .setStopWords(stopWords)
+    .setStopWords(stopWords.toArray)
     .setInputCol("words")
     .setOutputCol("filtered")
 
@@ -83,7 +72,7 @@ object Main extends App {
     .select(
       col("id").as("target_id"),
       col("features").as("target_features"),
-      col("lang").as("target_language")
+      col("lang")
     )
 
   def cosineSimilarity = udf{ (x : Vector, y : Vector) =>
@@ -99,7 +88,7 @@ object Main extends App {
     col("id").isInCollection(targetCourses)
   )).join(
     broadcast(target),
-    col("lang") === col("target_language")
+    usingColumn = "lang"
   ).withColumn("similarity",
     cosineSimilarity(col("features"),
                      col("target_features")))
@@ -112,18 +101,15 @@ object Main extends App {
           col("name")
         )
     )).filter(col("rank") < 11)
-    .cache()
 
   val output = result.select("target_id", "id")
     .orderBy("target_id", "rank")
     .groupBy("target_id")
     .agg(collect_list("id").as("ids"))
     .withColumn("maps", functions.map('target_id, 'ids))
-    .cache()
 
-  val outputMaps = output.select("maps").as[Map[String,Array[BigInt]]].collect()
-
-  val outputMap = mutable.Map.empty[String,Array[BigInt]]
+  val outputMaps = output.select("maps").as[Map[BigInt,Array[BigInt]]].collect()
+  val outputMap = mutable.Map.empty[BigInt,Array[BigInt]]
 
   outputMaps.map(m => outputMap += m.head)
 
@@ -138,5 +124,4 @@ object Main extends App {
   val fileWriter = new FileWriter(new File(outputPath))
   fileWriter.write(text)
   fileWriter.close()
-
 }
